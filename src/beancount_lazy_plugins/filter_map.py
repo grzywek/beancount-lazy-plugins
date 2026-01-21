@@ -59,6 +59,35 @@ class OperationConfig:
     times_applied: int = 0  # Track how many times this filter was applied
 
 
+def apply_set_action(action_value: str, current_value: str) -> str:
+    """Apply a set action to a value.
+    
+    Supports two formats:
+    - "new value" - replaces the entire value
+    - "replace:{'old':'new', ...}" - replaces each 'old' with 'new' in the current value
+    
+    Args:
+        action_value: The action specification
+        current_value: The current value to modify
+    
+    Returns:
+        The modified value
+    """
+    if action_value.startswith("replace:"):
+        replace_spec = action_value[8:]  # Remove "replace:" prefix
+        try:
+            replacements = ast.literal_eval(replace_spec)
+            if isinstance(replacements, dict):
+                result = current_value or ""
+                for old, new in replacements.items():
+                    result = result.replace(old, new)
+                return result
+        except (ValueError, SyntaxError):
+            pass  # Invalid format, fall through to default behavior
+    # Default behavior: replace entire value
+    return action_value
+
+
 def matches_filter(entry, filter):
     if isinstance(filter, TimeFilter):
         return (
@@ -160,11 +189,11 @@ def filter_map(entries, options_map, config_str=None):
                 # Handle SET_PAYEE and SET_NARRATION operations
                 new_payee = new_entry.payee
                 if op.setPayee:
-                    new_payee = op.setPayee
+                    new_payee = apply_set_action(op.setPayee, new_entry.payee or "")
                 
                 new_narration = new_entry.narration
                 if op.setNarration:
-                    new_narration = op.setNarration
+                    new_narration = apply_set_action(op.setNarration, new_entry.narration or "")
 
                 transaction = Transaction(
                     new_meta,

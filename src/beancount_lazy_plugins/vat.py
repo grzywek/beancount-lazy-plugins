@@ -1,11 +1,15 @@
 """
 A Beancount plugin that automatically extracts VAT from transactions tagged #vat.
 
-For Expenses postings, VAT is posted to an input VAT account (e.g. Assets:VAT:Input).
-For Income postings, VAT is posted to an output VAT account (e.g. Liabilities:Taxes:VAT:Output).
+Income postings take priority:
+  - If Income postings exist → VAT is calculated from Income amounts (output VAT).
+    Expenses are left untouched.
+  - If only Expenses exist → VAT is calculated from the total gross (sum of
+    negative postings) and deducted from Expenses (input VAT).
 
-Amounts in the original transaction are assumed to be gross (VAT-inclusive).
-The plugin splits each applicable posting into a net amount and a VAT posting.
+For Expenses: VAT is posted to an input VAT account (e.g. Assets:VAT:Input).
+For Income: VAT is posted to an output VAT account (e.g. Liabilities:Taxes:VAT:Output).
+Assets and Liabilities postings are never modified.
 
 Usage in main.bean:
     plugin "beancount_lazy_plugins.vat" "{
@@ -13,18 +17,6 @@ Usage in main.bean:
       'input_account': 'Assets:VAT:Input',
       'output_account': 'Liabilities:Taxes:VAT:Output',
     }"
-
-Example:
-    ; Before:
-    2025-01-15 * "Office Supplies" #vat
-      Expenses:Office     123.00 PLN
-      Assets:Bank:Checking
-
-    ; After (plugin transforms to):
-    2025-01-15 * "Office Supplies" #vat
-      Expenses:Office     100.00 PLN
-      Assets:VAT:Input     23.00 PLN
-      Assets:Bank:Checking
 """
 
 import ast
@@ -54,8 +46,7 @@ def _compute_vat(gross, rate):
 
     VAT = gross * rate / (1 + rate)
 
-    The result is rounded to 2 decimal places. The sign of the result
-    matches the sign of the gross amount.
+    The result is rounded to 2 decimal places.
     """
     vat = gross * rate / (1 + rate)
     return vat.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -64,10 +55,13 @@ def _compute_vat(gross, rate):
 def vat(entries, options_map, config_str=None):
     """Beancount plugin: Extract VAT from #vat-tagged transactions.
 
-    For each transaction tagged with #vat, the plugin processes all
-    Expenses:* and Income:* postings:
-    - Reduces the posting amount by the VAT component
-    - Adds a new posting to the appropriate VAT account
+    Income postings take priority: if present, VAT is calculated from the
+    total Income amount (output VAT) and Expenses are left untouched.
+    If no Income postings exist, VAT is calculated from the total gross
+    (sum of negative postings) and deducted from Expenses (input VAT).
+
+    If there are multiple adjustable postings, the VAT deduction is
+    distributed proportionally across them.
 
     Args:
       entries: A list of directives.
@@ -93,69 +87,101 @@ def vat(entries, options_map, config_str=None):
             new_entries.append(entry)
             continue
 
-        # Process this #vat transaction
-        new_postings = []
-        vat_postings = []
+        # Determine currency from first posting with units
+        currency = next(
+            (p.units.currency for p in entry.postings if p.units is not None),
+            None,
+        )
+        if currency is None:
+            new_entries.append(entry)
+            continue
 
-        for posting in entry.postings:
-            # Only process postings with explicit amounts
-            if posting.units is None:
-                new_postings.append(posting)
+        # Identify Expenses and Income postings
+        expense_indices = [
+            i
+            for i, p in enumerate(entry.postings)
+            if p.account.startswith("Expenses:") and p.units is not None
+        ]
+        income_indices = [
+            i
+            for i, p in enumerate(entry.postings)
+            if p.account.startswith("Income:") and p.units is not None
+        ]
+
+        if income_indices:
+            # Income takes priority: VAT from Income amounts (output VAT)
+            # Expenses are left untouched
+            gross = abs(
+                sum(
+                    (entry.postings[i].units.number for i in income_indices),
+                    Decimal("0"),
+                )
+            )
+            vat_amount = _compute_vat(gross, rate)
+            vat_account = output_account
+            vat_posting_amount = -vat_amount
+            adjustable_indices = income_indices
+            adjustment_sign = Decimal("1")  # make Income less negative
+        elif expense_indices:
+            # No Income: VAT from total gross (sum of negative postings)
+            negative_amounts = [
+                p.units.number
+                for p in entry.postings
+                if p.units is not None and p.units.number < 0
+            ]
+            if not negative_amounts:
+                new_entries.append(entry)
                 continue
+            gross = abs(sum(negative_amounts, Decimal("0")))
+            vat_amount = _compute_vat(gross, rate)
+            vat_account = input_account
+            vat_posting_amount = vat_amount
+            adjustable_indices = expense_indices
+            adjustment_sign = Decimal("-1")  # reduce Expenses
+        else:
+            # No Expenses or Income postings to adjust
+            new_entries.append(entry)
+            continue
 
-            account = posting.account
-            gross = posting.units.number
-            currency = posting.units.currency
+        # 4. Distribute VAT deduction across adjustable postings proportionally
+        new_postings = list(entry.postings)
 
-            if account.startswith("Expenses:"):
-                # Expense posting: extract input VAT
-                vat_amount = _compute_vat(gross, rate)
-                net_amount = gross - vat_amount
+        total_adjustable = sum(
+            abs(entry.postings[i].units.number) for i in adjustable_indices
+        )
 
-                # Replace posting with net amount
-                new_postings.append(
-                    posting._replace(units=Amount(net_amount, currency))
-                )
-                # Add VAT posting
-                vat_postings.append(
-                    data.Posting(
-                        account=input_account,
-                        units=Amount(vat_amount, currency),
-                        cost=None,
-                        price=None,
-                        flag=None,
-                        meta=None,
-                    )
-                )
+        remaining_vat = vat_amount
+        for idx, orig_idx in enumerate(adjustable_indices):
+            posting = entry.postings[orig_idx]
 
-            elif account.startswith("Income:"):
-                # Income posting: extract output VAT
-                # Income amounts are typically negative
-                vat_amount = _compute_vat(gross, rate)
-                net_amount = gross - vat_amount
-
-                # Replace posting with net amount
-                new_postings.append(
-                    posting._replace(units=Amount(net_amount, currency))
-                )
-                # Add VAT posting
-                vat_postings.append(
-                    data.Posting(
-                        account=output_account,
-                        units=Amount(vat_amount, currency),
-                        cost=None,
-                        price=None,
-                        flag=None,
-                        meta=None,
-                    )
-                )
-
+            if idx == len(adjustable_indices) - 1:
+                # Last posting gets the remainder (handles rounding)
+                adj = remaining_vat
             else:
-                # Assets, Liabilities, etc. — leave untouched
-                new_postings.append(posting)
+                proportion = abs(posting.units.number) / total_adjustable
+                adj = (vat_amount * proportion).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                remaining_vat -= adj
 
-        # Build modified transaction with VAT postings appended
-        modified_entry = entry._replace(postings=new_postings + vat_postings)
+            adjusted_amount = posting.units.number + (adjustment_sign * adj)
+            new_postings[orig_idx] = posting._replace(
+                units=Amount(adjusted_amount, posting.units.currency)
+            )
+
+        # 5. Add VAT posting
+        vat_posting = data.Posting(
+            account=vat_account,
+            units=Amount(vat_posting_amount, currency),
+            cost=None,
+            price=None,
+            flag=None,
+            meta=None,
+        )
+        new_postings.append(vat_posting)
+
+        # Build modified transaction
+        modified_entry = entry._replace(postings=new_postings)
         new_entries.append(modified_entry)
 
     return new_entries, errors

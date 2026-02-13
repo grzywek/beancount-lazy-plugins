@@ -62,9 +62,11 @@ class OperationConfig:
 def apply_set_action(action_value: str, current_value: str) -> str:
     """Apply a set action to a value.
     
-    Supports two formats:
+    Supports the following formats:
     - "new value" - replaces the entire value
     - "replace:{'old':'new', ...}" - replaces each 'old' with 'new' in the current value
+    - "prefix:text" - adds text at the beginning of the current value
+    - "suffix:text" - adds text at the end of the current value
     
     Args:
         action_value: The action specification
@@ -84,6 +86,12 @@ def apply_set_action(action_value: str, current_value: str) -> str:
                 return result
         except (ValueError, SyntaxError):
             pass  # Invalid format, fall through to default behavior
+    elif action_value.startswith("prefix:"):
+        prefix = action_value[7:]  # Remove "prefix:" prefix
+        return prefix + (current_value or "")
+    elif action_value.startswith("suffix:"):
+        suffix = action_value[7:]  # Remove "suffix:" prefix
+        return (current_value or "") + suffix
     # Default behavior: replace entire value
     return action_value
 

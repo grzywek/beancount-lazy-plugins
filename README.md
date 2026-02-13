@@ -117,12 +117,16 @@ A plugin that allows to apply operations to group of transactions. You can filte
     addTags: "tag1 tag2 #tag3"
     ; any dictionary of the metadata to add/alter selected transactions
     addMeta: "{'comment': 'Transaction description'}"
-    ; set payee - either replace entirely or use replace:{'old':'new', ...} for partial replacement
+    ; set payee - supports: direct value, replace:{'old':'new', ...}, prefix:, suffix:
     setPayee: "New Payee"
     setPayee: "replace:{'OLD':'New', 'Other':'New'}"
-    ; set narration - either replace entirely or use replace:{'old':'new', ...} for partial replacement
+    setPayee: "prefix:🏢 "
+    setPayee: "suffix: (verified)"
+    ; set narration - supports: direct value, replace:{'old':'new', ...}, prefix:, suffix:
     setNarration: "New Narration"
     setNarration: "replace:{'->':'→'}"
+    setNarration: "prefix:🎬 "
+    setNarration: "suffix: - automated"
 ```
 Beancount entry date can be arbitrary and is not being used by the plugin.
 
@@ -202,6 +206,22 @@ When some of the auto-imported merchant names do not make sense or are displayed
     setPayee: "replace:{'AMAZON':'Amazon', 'amazon':'Amazon'}"
 ```
 Instead of replacing the entire payee or narration, you can use the `replace:{'old':'new', ...}` format to replace specific substrings. Multiple replacements can be specified in a single dictionary - each key-value pair defines one substitution. This is especially useful for normalizing merchant names or fixing formatting issues across many transactions.
+
+### Example 8: adding emoji prefix to narration based on payee
+```
+2021-01-01 custom "filter-map" "apply"
+    filter: "payee:'Netflix'"
+    setNarration: "prefix:🎬 "
+
+2021-01-01 custom "filter-map" "apply"
+    filter: "payee:'Spotify'"
+    setNarration: "prefix:🎵 "
+
+2021-01-01 custom "filter-map" "apply"
+    filter: "any(account:'Expenses:Subscriptions:')"
+    setPayee: "suffix: (recurring)"
+```
+You can use `prefix:text` to add text at the beginning or `suffix:text` to add text at the end of the current payee or narration value. This is useful for adding visual indicators like emojis or categorization hints.
 
 ## auto_accounts
 A Beancount plugin that automatically inserts Open directives for accounts not opened (at the date of the first entry). Slightly improved version of the plugin supplied with Beancount by default. Reports all auto-opened accounts and adds metadata to Open directives. This allows to have the convenience of auto-opening accounts but avoiding accidental mistakes in the ledger.

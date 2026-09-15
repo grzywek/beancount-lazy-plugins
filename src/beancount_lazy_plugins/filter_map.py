@@ -67,7 +67,8 @@ def apply_set_action(action_value: str, current_value: str) -> str:
     - "replace:{'old':'new', ...}" - replaces each 'old' with 'new' in the current value
     - "prefix:text" - adds text at the beginning of the current value
     - "suffix:text" - adds text at the end of the current value
-    
+    - "upper:" - the current value in upper case (e.g. every payee: `filter: "payee:'.'"`)
+
     Args:
         action_value: The action specification
         current_value: The current value to modify
@@ -92,6 +93,8 @@ def apply_set_action(action_value: str, current_value: str) -> str:
     elif action_value.startswith("suffix:"):
         suffix = action_value[7:]  # Remove "suffix:" prefix
         return (current_value or "") + suffix
+    elif action_value == "upper:":
+        return (current_value or "").upper()
     # Default behavior: replace entire value
     return action_value
 
